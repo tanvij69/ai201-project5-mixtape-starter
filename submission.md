@@ -8,7 +8,7 @@ I used Claude throughout this project for codebase navigation and debugging supp
 - Used it to trace the two example call chains from the README (rating a song, viewing a playlist) across routes and services before touching any bug.
 - For each bug, I reproduced the behavior myself first using a Python shell with real seeded data, comparing expected vs. actual output, before looking for a fix.
 - Once I confirmed a bug was real, I asked Claude to help me read the specific suspicious line or condition I'd already found (e.g. the `weekday() != 6` check, the `[:-1]` slice, the missing `create_notification()` call) and explain why it produced the observed behavior.
-- I verified every fix myself by rerunning the reproduction steps and the relevant pytest file before committing, rather than trusting the explanation alone.
+- Verification example: for the streak bug, I didn't just accept Claude's explanation of the `weekday() != 6` condition. I ran the actual Saturday→Sunday reproduction in a Python shell myself first to confirm the bug existed (streak stayed at 1 when it should have gone to 2), then made the fix and reran the same steps plus the full pytest suite to confirm the behavior actually changed, rather than trusting the line-level explanation without seeing it fail and then pass firsthand.
 
 ## Codebase Map
 
@@ -47,7 +47,9 @@ All 5 read from the course brief table:
 
 **The root cause:** The streak only incremented when `days_since_last == 1 AND today.weekday() != 6`. Python's `weekday()` returns 6 for Sunday, so this extra condition excluded Sundays from ever counting as a valid consecutive-day increment. Any streak update landing on a Sunday fell through to the `else` branch and incorrectly reset to 1 instead of incrementing.
 
-**My fix and side-effect check:** Removed `and today.weekday() != 6`, leaving `days_since_last == 1` as the sole check. Verified with `pytest tests/test_streaks.py -v` — all 5 tests pass, including same-day (no double-count), skipped-day (resets to 1), and Sunday (now correctly increments).
+**My fix:** Removed `and today.weekday() != 6`, leaving `days_since_last == 1` as the sole check for a consecutive day.
+
+**Side-effect check:** Ran `pytest tests/test_streaks.py -v` — all 5 tests pass, including `test_streak_does_not_double_count_same_day` (confirms same-day calls still don't double-count) and `test_streak_resets_after_skipped_day` (confirms skipping a day still resets to 1). These two cases share the same function and were the most likely to break from this change, so passing both confirms the fix didn't disturb the other boundary conditions.
 
 ---
 
@@ -59,7 +61,9 @@ All 5 read from the course brief table:
 
 **The root cause:** `rate_song()` saves the `Rating` to the database but never calls `create_notification()`. The notification-creation step simply doesn't exist in this function's code path, unlike the structurally similar `add_to_playlist()`, which does call it. This isn't a typo — it's a missing step in the function, likely omitted when the feature was originally built.
 
-**My fix and side-effect check:** Added a `create_notification()` call after the rating commits, following the same pattern as `add_to_playlist()` (only notify if the rater isn't the song's own sharer). Verified via Python shell: notification count went from 1 to 2 after a different user rated the song. Also re-ran the rating flow with the sharer rating their own song to confirm no notification was created in that case, matching the "don't notify yourself" pattern.
+**My fix:** Added a `create_notification()` call after the rating commits, following the same pattern as `add_to_playlist()` — only notify if the rater isn't the song's own sharer.
+
+**Side-effect check:** Verified via Python shell that notification count went from 1 to 2 after a different user rated the song. I then re-ran the flow with the song's own sharer rating their own song, and confirmed no notification was created in that case — this was the specific behavior most likely to break from adding the notification call (accidentally notifying users about their own actions), so confirming it stayed correct was the meaningful check here.
 
 ---
 
@@ -71,4 +75,6 @@ All 5 read from the course brief table:
 
 **The root cause:** After correctly querying and ordering all songs in the playlist by position, the function sliced the final list with `[:-1]`, which drops the last element of any list. This silently removed the last-added song from every playlist's results, regardless of playlist size.
 
-**My fix and side-effect check:** Changed `songs[:-1]` to `songs`, returning the full ordered list. Verified with `pytest tests/test_playlists.py -v` — all 3 tests pass, including `test_playlist_returns_all_songs` (previously failing at 4 instead of 5) and `test_playlist_returns_songs_in_order`, confirming ordering wasn't affected by the fix. Also confirmed empty playlists still return an empty list without error.
+**My fix:** Changed `songs[:-1]` to `songs`, returning the full ordered list.
+
+**Side-effect check:** Ran `pytest tests/test_playlists.py -v` — all 3 tests pass. `test_playlist_returns_songs_in_order` specifically checks the exact sequence of song titles, so a passing result confirms the fix only restored the missing song and didn't disturb the position-based ordering logic. `test_empty_playlist_returns_empty_list` confirms playlists with zero songs still return `[]` correctly rather than erroring on the slice change.
